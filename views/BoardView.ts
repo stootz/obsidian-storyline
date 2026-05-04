@@ -1564,7 +1564,7 @@ export class BoardView extends ItemView {
         if (!this.corkboardConnectionsEnabled) return;
 
         // Render saved connections
-        for (const conn of this.corkboardConnections.values()) {
+        for (const [connId, conn] of this.corkboardConnections.entries()) {
             const fromNode = this.boardEl?.querySelector<HTMLElement>(`.story-line-corkboard-node[data-file-path="${CSS.escape(conn.from)}"]`);
             const toNode = this.boardEl?.querySelector<HTMLElement>(`.story-line-corkboard-node[data-file-path="${CSS.escape(conn.to)}"]`);
             if (!fromNode || !toNode) continue;
@@ -1581,6 +1581,24 @@ export class BoardView extends ItemView {
             polyline.setAttribute('stroke', 'rgba(100,200,255,0.7)');
             polyline.setAttribute('stroke-width', '2');
             polyline.setAttribute('fill', 'none');
+            polyline.setAttribute('style', 'pointer-events: auto; cursor: pointer;');
+            polyline.setAttribute('data-conn-id', connId);
+
+            polyline.addEventListener('mouseenter', () => {
+                polyline.setAttribute('stroke', 'rgba(100,220,255,1)');
+                polyline.setAttribute('stroke-width', '3');
+            });
+
+            polyline.addEventListener('mouseleave', () => {
+                polyline.setAttribute('stroke', 'rgba(100,200,255,0.7)');
+                polyline.setAttribute('stroke-width', '2');
+            });
+
+            polyline.addEventListener('click', (e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                this.removeSavedConnection(connId);
+            });
 
             svg.appendChild(polyline);
         }
@@ -1619,6 +1637,16 @@ export class BoardView extends ItemView {
         this.schedulePersistCorkboardLayout();
 
         new Notice(`Created connection between selected cards`);
+    }
+
+    private removeSavedConnection(connId: string): void {
+        if (!this.corkboardConnections.has(connId)) return;
+
+        this.corkboardConnections.delete(connId);
+        this.updateCorkboardConnections();
+        this.schedulePersistCorkboardLayout();
+
+        new Notice(`Removed connection`);
     }
 
     /**
@@ -2134,7 +2162,7 @@ export class BoardView extends ItemView {
         }
 
         // Load saved connections
-        const conns = (this.sceneManager as any).getCorkboardConnections?.() ?? {};
+        const conns = (this.sceneManager as any).getCorkboardConnections() ?? {};
         for (const [id, conn] of Object.entries(conns)) {
             if (conn && typeof conn === 'object' && 'from' in conn && 'to' in conn) {
                 this.corkboardConnections.set(id, conn as { from: string; to: string });
@@ -2164,7 +2192,7 @@ export class BoardView extends ItemView {
         }
 
         await this.sceneManager.setCorkboardPositions(payload);
-        await (this.sceneManager as any).setCorkboardConnections?.(connPayload);
+        await (this.sceneManager as any).setCorkboardConnections(connPayload);
         this.plugin.viewSnapshotService.scheduleAutoSave();
     }
 

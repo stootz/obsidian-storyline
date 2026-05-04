@@ -1407,6 +1407,7 @@ export class SceneManager implements ISceneStore {
             const path = `${sysFolder}/board.json`;
             if (!await adapter.exists(path)) {
                 this._activeProject.corkboardPositions = {};
+                (this._activeProject as any).corkboardConnections = {};
                 return;
             }
             const raw = JSON.parse(await adapter.read(path));
@@ -1425,8 +1426,23 @@ export class SceneManager implements ISceneStore {
                 }
             }
             this._activeProject.corkboardPositions = positions;
+
+            // Load connections
+            const connections: Record<string, { from: string; to: string }> = {};
+            if (raw.corkboardConnections && typeof raw.corkboardConnections === 'object') {
+                for (const [key, value] of Object.entries(raw.corkboardConnections)) {
+                    const v = value as any;
+                    if (v && typeof v === 'object' && v.from && v.to) {
+                        connections[key] = { from: String(v.from), to: String(v.to) };
+                    }
+                }
+            }
+            (this._activeProject as any).corkboardConnections = connections;
         } catch {
-            if (this._activeProject) this._activeProject.corkboardPositions = {};
+            if (this._activeProject) {
+                this._activeProject.corkboardPositions = {};
+                (this._activeProject as any).corkboardConnections = {};
+            }
         }
     }
 
@@ -1448,17 +1464,71 @@ export class SceneManager implements ISceneStore {
 
         this._activeProject.corkboardPositions = cleaned;
 
-        // Write to System/board.json
+        // Write to System/board.json (preserving existing connections)
         try {
             const adapter = this.plugin.app.vault.adapter;
             const sysFolder = this.plugin.getProjectSystemFolder();
             if (!await adapter.exists(sysFolder)) {
                 await this.plugin.app.vault.createFolder(sysFolder);
             }
-            await adapter.write(`${sysFolder}/board.json`, JSON.stringify({ corkboardPositions: cleaned }, null, 2));
+            
+            const boardPath = `${sysFolder}/board.json`;
+            let boardData: Record<string, any> = { corkboardPositions: cleaned };
+            
+            // Read existing board.json to preserve connections
+            try {
+                if (await adapter.exists(boardPath)) {
+                    const existing = JSON.parse(await adapter.read(boardPath));
+                    if (existing.corkboardConnections) {
+                        boardData.corkboardConnections = existing.corkboardConnections;
+                    }
+                }
+            } catch {
+                // If read fails, just proceed with clean slate
+            }
+            
+            await adapter.write(boardPath, JSON.stringify(boardData, null, 2));
         } catch (e) {
             console.error('[StoryLine] Failed to save corkboard positions:', e);
         }
+    }
+
+    /** Persist corkboard connections to System/board.json */
+    async setCorkboardConnections(connections: Record<string, { from: string; to: string }>): Promise<void> {
+        if (!this._activeProject) return;
+
+        // Write to System/board.json (preserving existing positions)
+        try {
+            const adapter = this.plugin.app.vault.adapter;
+            const sysFolder = this.plugin.getProjectSystemFolder();
+            if (!await adapter.exists(sysFolder)) {
+                await this.plugin.app.vault.createFolder(sysFolder);
+            }
+            
+            const boardPath = `${sysFolder}/board.json`;
+            let boardData: Record<string, any> = { corkboardConnections: connections };
+            
+            // Read existing board.json to preserve positions
+            try {
+                if (await adapter.exists(boardPath)) {
+                    const existing = JSON.parse(await adapter.read(boardPath));
+                    if (existing.corkboardPositions) {
+                        boardData.corkboardPositions = existing.corkboardPositions;
+                    }
+                }
+            } catch {
+                // If read fails, just proceed
+            }
+            
+            await adapter.write(boardPath, JSON.stringify(boardData, null, 2));
+        } catch (e) {
+            console.error('[StoryLine] Failed to save corkboard connections:', e);
+        }
+    }
+
+    /** Get corkboard connections from in-memory cache */
+    getCorkboardConnections(): Record<string, { from: string; to: string }> {
+        return (this._activeProject as any)?.corkboardConnections ?? {};
     }
 
     // ────────────────────────────────────
