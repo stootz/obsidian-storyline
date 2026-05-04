@@ -58,6 +58,8 @@ export class BoardView extends ItemView {
     private corkboardZoomTarget: number | null = null;
     /** Pivot point (viewport-local) for current zoom gesture */
     private corkboardZoomPivot = { vx: 0, vy: 0 };
+    /** Toolbar zoom label element (corkboard only) */
+    private corkboardZoomLabelEl: HTMLElement | null = null;
     private quickNoteLastCreatedAt = 0;
     private quickNoteChainIndex = 0;
     /** Active virtual scrollers — cleaned up on re-render */
@@ -221,6 +223,8 @@ export class BoardView extends ItemView {
      * Render the toolbar
      */
     private renderToolbar(toolbar: HTMLElement): void {
+        // Clear any previous reference to toolbar zoom label before re-render
+        this.corkboardZoomLabelEl = null;
         // Title + project selector row
         const titleRow = toolbar.createDiv('story-line-title-row');
         titleRow.createEl('h3', {
@@ -426,6 +430,35 @@ export class BoardView extends ItemView {
         snapManage.addEventListener('click', () => {
             openManageSnapshotsModal(this.plugin.app, this.plugin.viewSnapshotService);
         });
+
+        // Corkboard-only zoom controls (simple: -, percent, +)
+        if (this.boardMode === 'corkboard') {
+            const zoomWrap = controls.createDiv('story-line-corkboard-zoom');
+
+            const zoomOutBtn = zoomWrap.createEl('button', { cls: 'clickable-icon' });
+            try { obsidian.setIcon(zoomOutBtn, 'zoom-out'); } catch (_) {}
+            attachTooltip(zoomOutBtn, 'Zoom out');
+            zoomOutBtn.addEventListener('click', () => {
+                this.corkboardCamera.zoom = Math.max(0.35, (this.corkboardCamera.zoom || 1) * 0.9);
+                const canvas = this.boardEl?.querySelector('.story-line-corkboard-canvas') as HTMLElement | null;
+                if (canvas) this.applyCorkboardCamera(canvas);
+                if (this.corkboardZoomLabelEl) this.corkboardZoomLabelEl.textContent = `${Math.round((this.corkboardCamera.zoom || 1) * 100)}%`;
+            });
+
+            const zoomLabel = zoomWrap.createDiv('story-line-corkboard-zoom-label');
+            zoomLabel.textContent = `${Math.round((this.corkboardCamera.zoom || 1) * 100)}%`;
+            this.corkboardZoomLabelEl = zoomLabel;
+
+            const zoomInBtn = zoomWrap.createEl('button', { cls: 'clickable-icon' });
+            try { obsidian.setIcon(zoomInBtn, 'zoom-in'); } catch (_) {}
+            attachTooltip(zoomInBtn, 'Zoom in');
+            zoomInBtn.addEventListener('click', () => {
+                this.corkboardCamera.zoom = Math.max(0.35, Math.min(2.8, (this.corkboardCamera.zoom || 1) * 1.1));
+                const canvas = this.boardEl?.querySelector('.story-line-corkboard-canvas') as HTMLElement | null;
+                if (canvas) this.applyCorkboardCamera(canvas);
+                if (this.corkboardZoomLabelEl) this.corkboardZoomLabelEl.textContent = `${Math.round((this.corkboardCamera.zoom || 1) * 100)}%`;
+            });
+        }
     }
 
     /**
@@ -1019,6 +1052,9 @@ export class BoardView extends ItemView {
 
     private applyCorkboardCamera(canvas: HTMLElement): void {
         canvas.style.transform = `translate(${this.corkboardCamera.x}px, ${this.corkboardCamera.y}px) scale(${this.corkboardCamera.zoom})`;
+        if (this.corkboardZoomLabelEl) {
+            this.corkboardZoomLabelEl.textContent = `${Math.round((this.corkboardCamera.zoom || 1) * 100)}%`;
+        }
     }
 
     /**
