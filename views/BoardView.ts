@@ -66,6 +66,10 @@ export class BoardView extends ItemView {
     private corkboardConnectionsEnabled: boolean = false;
     /** SVG overlay for temporary corkboard connections */
     private corkboardConnectionSvg: SVGSVGElement | null = null;
+    /** Saved connections: Map of id to { from: filePath, to: filePath } */
+    private corkboardConnections: Map<string, { from: string; to: string }> = new Map();
+    /** Counter for generating unique connection IDs */
+    private corkboardConnectionCounter: number = 0;
     /** Minimap canvas for corkboard (non-interactive) */
     private corkboardMinimapCanvas: HTMLCanvasElement | null = null;
     private quickNoteLastCreatedAt = 0;
@@ -479,6 +483,17 @@ export class BoardView extends ItemView {
                 connectionsBtn.toggleClass('is-active', this.corkboardConnectionsEnabled);
                 this.updateCorkboardConnections();
             });
+
+            // Create connection button (visible only when exactly 2 scenes selected)
+            const createConnBtn = controls.createEl('button', { cls: 'clickable-icon' });
+            attachTooltip(createConnBtn, 'Create a saved connection between the 2 selected cards');
+            obsidian.setIcon(createConnBtn, 'plus-circle');
+            createConnBtn.style.display = 'none';
+            createConnBtn.addEventListener('click', () => {
+                this.createSavedConnection();
+            });
+            // Store button ref to update visibility later
+            (this as any).createConnBtnEl = createConnBtn;
         }
 
         // Corkboard-only zoom controls (simple: -, percent, +)
@@ -1548,6 +1563,29 @@ export class BoardView extends ItemView {
 
         if (!this.corkboardConnectionsEnabled) return;
 
+        // Render saved connections
+        for (const conn of this.corkboardConnections.values()) {
+            const fromNode = this.boardEl?.querySelector<HTMLElement>(`.story-line-corkboard-node[data-file-path="${CSS.escape(conn.from)}"]`);
+            const toNode = this.boardEl?.querySelector<HTMLElement>(`.story-line-corkboard-node[data-file-path="${CSS.escape(conn.to)}"]`);
+            if (!fromNode || !toNode) continue;
+
+            const fromRect = fromNode.getBoundingClientRect();
+            const toRect = toNode.getBoundingClientRect();
+            const fromX = fromRect.left + fromRect.width / 2 - viewportRect.left;
+            const fromY = fromRect.top + fromRect.height / 2 - viewportRect.top;
+            const toX = toRect.left + toRect.width / 2 - viewportRect.left;
+            const toY = toRect.top + toRect.height / 2 - viewportRect.top;
+
+            const polyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+            polyline.setAttribute('points', `${fromX},${fromY} ${toX},${toY}`);
+            polyline.setAttribute('stroke', 'rgba(100,200,255,0.7)');
+            polyline.setAttribute('stroke-width', '2');
+            polyline.setAttribute('fill', 'none');
+
+            svg.appendChild(polyline);
+        }
+
+        // Render temporary selected-card connection lines
         const selectedNodes = Array.from(this.boardEl?.querySelectorAll<HTMLElement>('.story-line-corkboard-node') || [])
             .filter(node => this.selectedScenes.has(node.dataset.filePath || ''));
 
@@ -1567,6 +1605,20 @@ export class BoardView extends ItemView {
         polyline.setAttribute('fill', 'none');
 
         svg.appendChild(polyline);
+    }
+
+    private createSavedConnection(): void {
+        if (this.selectedScenes.size !== 2) return;
+
+        const paths = Array.from(this.selectedScenes);
+        const connId = `conn-${Date.now()}-${this.corkboardConnectionCounter++}`;
+        const conn = { from: paths[0], to: paths[1] };
+
+        this.corkboardConnections.set(connId, conn);
+        this.updateCorkboardConnections();
+        this.schedulePersistCorkboardLayout();
+
+        new Notice(`Created connection between selected cards`);
     }
 
     /**
@@ -2068,6 +2120,7 @@ export class BoardView extends ItemView {
 
         this.corkboardLoadedProjectFile = projectPath;
         this.corkboardPositions.clear();
+        this.corkboardConnections.clear();
         this._corkboardProjectLoaded = !!projectPath;
 
         const saved = this.sceneManager.getCorkboardPositions();
@@ -2078,6 +2131,14 @@ export class BoardView extends ItemView {
             if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
             const h = Number(pos?.h);
             this.corkboardPositions.set(path, { x, y, z: Number.isFinite(z) ? z : 1, ...(Number.isFinite(h) && h > 0 ? { h } : {}) });
+        }
+
+        // Load saved connections
+        const conns = (this.sceneManager as any).getCorkboardConnections?.() ?? {};
+        for (const [id, conn] of Object.entries(conns)) {
+            if (conn && typeof conn === 'object' && 'from' in conn && 'to' in conn) {
+                this.corkboardConnections.set(id, conn as { from: string; to: string });
+            }
         }
     }
 
@@ -2096,7 +2157,14 @@ export class BoardView extends ItemView {
         for (const [path, pos] of this.corkboardPositions.entries()) {
             payload[path] = { x: pos.x, y: pos.y, z: pos.z, ...(pos.h ? { h: pos.h } : {}) };
         }
+        
+        const connPayload: Record<string, { from: string; to: string }> = {};
+        for (const [id, conn] of this.corkboardConnections.entries()) {
+            connPayload[id] = conn;
+        }
+
         await this.sceneManager.setCorkboardPositions(payload);
+        await (this.sceneManager as any).setCorkboardConnections?.(connPayload);
         this.plugin.viewSnapshotService.scheduleAutoSave();
     }
 
@@ -2689,7 +2757,17 @@ export class BoardView extends ItemView {
             if (this.corkboardAlignControlsEl) {
                 this.corkboardAlignControlsEl.style.display = 'none';
             }
+            const createConnBtn = (this as any).createConnBtnEl as HTMLElement | undefined;
+            if (createConnBtn) {
+                createConnBtn.style.display = 'none';
+            }
             return;
+        }
+
+        // Show/hide create connection button (visible only when exactly 2 selected)
+        const createConnBtn = (this as any).createConnBtnEl as HTMLElement | undefined;
+        if (createConnBtn) {
+            createConnBtn.style.display = this.selectedScenes.size === 2 ? 'flex' : 'none';
         }
 
         this.bulkBarEl.empty();
