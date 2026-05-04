@@ -546,6 +546,7 @@ export class BoardView extends ItemView {
 
         // ── Drag-and-drop images onto the corkboard ──
         this.attachCorkboardImageDrop(viewport);
+        this.attachCorkboardLassoSelection(viewport);
 
         scenes.forEach((scene, index) => {
           try {
@@ -1093,6 +1094,44 @@ export class BoardView extends ItemView {
             return [vals[0], vals[1]];
         };
 
+        let isLassoSelecting = false;
+        let lassoStartX = 0;
+        let lassoStartY = 0;
+        let lassoEl: HTMLElement | null = null;
+
+        const clearLassoOverlay = (): void => {
+            if (lassoEl) {
+                lassoEl.remove();
+                lassoEl = null;
+            }
+            isLassoSelecting = false;
+        };
+
+        const getViewportPoint = (clientX: number, clientY: number) => {
+            const rect = viewport.getBoundingClientRect();
+            return {
+                x: clientX - rect.left,
+                y: clientY - rect.top,
+            };
+        };
+
+        const rectsIntersect = (a: { left: number; top: number; width: number; height: number }, b: { left: number; top: number; width: number; height: number }) => {
+            return a.left < b.left + b.width && a.left + a.width > b.left && a.top < b.top + b.height && a.top + a.height > b.top;
+        };
+
+        const updateLassoOverlay = (clientX: number, clientY: number): void => {
+            if (!lassoEl) return;
+            const point = getViewportPoint(clientX, clientY);
+            const left = Math.min(lassoStartX, point.x);
+            const top = Math.min(lassoStartY, point.y);
+            const width = Math.abs(point.x - lassoStartX);
+            const height = Math.abs(point.y - lassoStartY);
+            lassoEl.style.left = `${left}px`;
+            lassoEl.style.top = `${top}px`;
+            lassoEl.style.width = `${width}px`;
+            lassoEl.style.height = `${height}px`;
+        };
+
         // Velocity tracking for subtle inertia
         let lastMoveTime = 0;
         let velocityX = 0;
@@ -1172,6 +1211,28 @@ export class BoardView extends ItemView {
             const canPanMouse = e.button === 0 || e.button === 1;
             if (!canPanMouse) return;
 
+            if (e.shiftKey && isBackgroundTarget(e.target)) {
+                isLassoSelecting = true;
+                const start = getViewportPoint(e.clientX, e.clientY);
+                lassoStartX = start.x;
+                lassoStartY = start.y;
+                clearLassoOverlay();
+                lassoEl = viewport.createDiv();
+                lassoEl.style.position = 'absolute';
+                lassoEl.style.pointerEvents = 'none';
+                lassoEl.style.border = '1px dashed rgba(0, 122, 255, 0.9)';
+                lassoEl.style.background = 'rgba(0, 122, 255, 0.14)';
+                lassoEl.style.zIndex = '1000';
+                lassoEl.style.left = `${lassoStartX}px`;
+                lassoEl.style.top = `${lassoStartY}px`;
+                lassoEl.style.width = '0px';
+                lassoEl.style.height = '0px';
+                viewport.setPointerCapture(e.pointerId);
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+            }
+
             isPanning = true;
             panPointerId = e.pointerId;
             panStartX = e.clientX;
@@ -1187,6 +1248,12 @@ export class BoardView extends ItemView {
         const onPointerMove = (e: PointerEvent) => {
             if (e.pointerType === 'touch' && touchPoints.has(e.pointerId)) {
                 touchPoints.set(e.pointerId, { x: e.clientX, y: e.clientY });
+            }
+
+            if (isLassoSelecting) {
+                updateLassoOverlay(e.clientX, e.clientY);
+                e.preventDefault();
+                return;
             }
 
             if (touchPoints.size >= 2) {
@@ -1228,6 +1295,61 @@ export class BoardView extends ItemView {
         };
 
         const onPointerUp = (e: PointerEvent) => {
+            if (isLassoSelecting) {
+                const viewportRect = viewport.getBoundingClientRect();
+                const current = getViewportPoint(e.clientX, e.clientY);
+                const selectionRect = {
+                    left: Math.min(lassoStartX, current.x),
+                    top: Math.min(lassoStartY, current.y),
+                    width: Math.abs(current.x - lassoStartX),
+                    height: Math.abs(current.y - lassoStartY),
+                };
+                const selectionAbsRect = {
+                    left: viewportRect.left + selectionRect.left,
+                    top: viewportRect.top + selectionRect.top,
+                    width: selectionRect.width,
+                    height: selectionRect.height,
+                };
+
+                const matchedPaths = new Set<string>();
+                const nodes = Array.from(canvas.querySelectorAll<HTMLElement>('.story-line-corkboard-node'));
+                for (const node of nodes) {
+                    const path = node.dataset.filePath;
+                    if (!path) continue;
+                    const nodeBounds = node.getBoundingClientRect();
+                    const nodeRect = {
+                        left: nodeBounds.left,
+                        top: nodeBounds.top,
+                        width: nodeBounds.width,
+                        height: nodeBounds.height,
+                    };
+                    if (rectsIntersect(selectionAbsRect, nodeRect)) {
+                        matchedPaths.add(path);
+                    }
+                }
+
+                if (!e.ctrlKey && !e.metaKey) {
+                    this.selectedScenes.clear();
+                }
+                for (const path of matchedPaths) {
+                    this.selectedScenes.add(path);
+                }
+                if (matchedPaths.size > 0) {
+                    const lastPath = Array.from(matchedPaths).pop()!;
+                    const lastScene = this.sceneManager.getScene(lastPath);
+                    if (lastScene) {
+                        this.selectedScene = lastScene;
+                    }
+                }
+                this.updateBulkBar();
+                this.refreshBoard();
+                clearLassoOverlay();
+                if (viewport.hasPointerCapture(e.pointerId)) {
+                    viewport.releasePointerCapture(e.pointerId);
+                }
+                return;
+            }
+
             touchPoints.delete(e.pointerId);
 
             if (touchPoints.size < 2) {
@@ -1276,6 +1398,99 @@ export class BoardView extends ItemView {
                 this.corkboardZoomRaf = null;
             }
         };
+    }
+
+    private attachCorkboardLassoSelection(viewport: HTMLElement): void {
+        let lassoEl: HTMLElement | null = null;
+        let startX = 0;
+        let startY = 0;
+
+        const rectsIntersect = (a: { left: number; top: number; width: number; height: number }, b: { left: number; top: number; width: number; height: number }) => {
+            return a.left < b.left + b.width && a.left + a.width > b.left && a.top < b.top + b.height && a.top + a.height > b.top;
+        };
+
+        const cleanupLasso = (pointerId?: number) => {
+            if (lassoEl) {
+                lassoEl.remove();
+                lassoEl = null;
+            }
+            viewport.removeEventListener('pointermove', onPointerMove);
+            viewport.removeEventListener('pointerup', onPointerUp);
+            viewport.removeEventListener('pointercancel', onPointerUp);
+            if (typeof pointerId === 'number' && viewport.hasPointerCapture(pointerId)) {
+                viewport.releasePointerCapture(pointerId);
+            }
+        };
+
+        const onPointerMove = (event: PointerEvent) => {
+            if (!lassoEl) return;
+            const viewportRect = viewport.getBoundingClientRect();
+            const x = event.clientX - viewportRect.left;
+            const y = event.clientY - viewportRect.top;
+            const left = Math.min(startX, x);
+            const top = Math.min(startY, y);
+            lassoEl.style.left = `${left}px`;
+            lassoEl.style.top = `${top}px`;
+            lassoEl.style.width = `${Math.abs(x - startX)}px`;
+            lassoEl.style.height = `${Math.abs(y - startY)}px`;
+            event.preventDefault();
+            event.stopPropagation();
+        };
+
+        const onPointerUp = (event: PointerEvent) => {
+            if (!lassoEl) return;
+            const lassoRect = lassoEl.getBoundingClientRect();
+            const nodes = Array.from(viewport.querySelectorAll<HTMLElement>('.story-line-corkboard-node'));
+            if (!event.ctrlKey && !event.metaKey) {
+                this.selectedScenes.clear();
+            }
+            for (const node of nodes) {
+                const path = node.dataset.filePath;
+                if (!path) continue;
+                const nodeRect = node.getBoundingClientRect();
+                if (rectsIntersect(lassoRect, nodeRect)) {
+                    this.selectedScenes.add(path);
+                }
+            }
+            this.updateBulkBar();
+            this.refreshBoard();
+            cleanupLasso(event.pointerId);
+            event.preventDefault();
+            event.stopPropagation();
+        };
+
+        const onPointerDown = (event: PointerEvent) => {
+            if (!event.shiftKey) return;
+            const target = event.target as HTMLElement | null;
+            if (!target) return;
+            if (target.closest('.story-line-corkboard-node, button, a, input, textarea, select, .story-line-corkboard-note-card, .story-line-corkboard-note-resize-handle')) {
+                return;
+            }
+            const viewportRect = viewport.getBoundingClientRect();
+            startX = event.clientX - viewportRect.left;
+            startY = event.clientY - viewportRect.top;
+            cleanupLasso();
+            lassoEl = viewport.createDiv('story-line-corkboard-lasso');
+            lassoEl.style.position = 'absolute';
+            lassoEl.style.pointerEvents = 'none';
+            lassoEl.style.border = '1px solid var(--interactive-accent)';
+            lassoEl.style.background = 'rgba(100, 150, 255, 0.15)';
+            lassoEl.style.zIndex = '9999';
+            lassoEl.style.left = `${startX}px`;
+            lassoEl.style.top = `${startY}px`;
+            lassoEl.style.width = '0px';
+            lassoEl.style.height = '0px';
+            viewport.addEventListener('pointermove', onPointerMove);
+            viewport.addEventListener('pointerup', onPointerUp);
+            viewport.addEventListener('pointercancel', onPointerUp);
+            if (!viewport.hasPointerCapture(event.pointerId)) {
+                viewport.setPointerCapture(event.pointerId);
+            }
+            event.preventDefault();
+            event.stopPropagation();
+        };
+
+        viewport.addEventListener('pointerdown', onPointerDown, true);
     }
 
     /** Force BoardView to reload corkboard positions from SceneManager on next refresh. */
