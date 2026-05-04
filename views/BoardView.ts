@@ -1093,9 +1093,14 @@ export class BoardView extends ItemView {
             // Apply spotlight visual effects if enabled
             if (this.corkboardSpotlightEnabled && this.corkboardSpotlightField && this.corkboardSpotlightValue) {
                 const isSpotlightMatch = this.isSceneSpotlightMatch(scene);
-                node.style.opacity = isSpotlightMatch ? '1' : '0.55';
-                node.style.filter = isSpotlightMatch ? 'drop-shadow(0 0 20px rgba(255, 230, 120, 0.8))' : 'brightness(0.75)';
-                node.style.transition = 'opacity 180ms ease, filter 180ms ease';
+                // Important: avoid lowering opacity on the node itself; semi-transparent
+                // cards would allow SVG lines beneath to show through and appear "above".
+                // Use filter-based dimming instead to keep cards visually above lines.
+                node.style.opacity = '1';
+                node.style.filter = isSpotlightMatch
+                    ? 'drop-shadow(0 0 20px rgba(255, 230, 120, 0.8))'
+                    : 'brightness(0.6)'; // ~0.55 perceived dim without transparency bleed
+                node.style.transition = 'filter 180ms ease';
             } else {
                 node.style.opacity = '';
                 node.style.filter = '';
