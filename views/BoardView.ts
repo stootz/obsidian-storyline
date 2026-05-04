@@ -62,6 +62,8 @@ export class BoardView extends ItemView {
     private corkboardZoomLabelEl: HTMLElement | null = null;
     /** Toolbar align controls wrapper for corkboard */
     private corkboardAlignControlsEl: HTMLElement | null = null;
+    /** SVG overlay for temporary corkboard connections */
+    private corkboardConnectionSvg: SVGSVGElement | null = null;
     /** Minimap canvas for corkboard (non-interactive) */
     private corkboardMinimapCanvas: HTMLCanvasElement | null = null;
     private quickNoteLastCreatedAt = 0;
@@ -687,6 +689,21 @@ export class BoardView extends ItemView {
         viewport.style.overflow = 'hidden';
         const canvas = viewport.createDiv('story-line-corkboard-canvas');
 
+        // Create SVG overlay for temporary corkboard connections (above canvas, below cards)
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.style.position = 'absolute';
+        svg.style.inset = '0';
+        svg.style.width = '100%';
+        svg.style.height = '100%';
+        svg.style.overflow = 'visible';
+        svg.style.pointerEvents = 'none';
+        svg.style.zIndex = '10'; // Above canvas background, below cards (cards are 1+)
+        svg.setAttribute('width', '100%');
+        svg.setAttribute('height', '100%');
+        svg.setAttribute('preserveAspectRatio', 'none');
+        viewport.appendChild(svg);
+        this.corkboardConnectionSvg = svg;
+
         // Create a small non-interactive minimap overlay (bottom-right)
         const minimapWrap = viewport.createDiv('story-line-corkboard-minimap');
         // Explicit inline styles required to ensure minimap stays inside viewport
@@ -867,6 +884,10 @@ export class BoardView extends ItemView {
             console.error(`[StoryLine] Failed to render corkboard scene "${scene.filePath}":`, err);
           }
         });
+
+        if (this.boardMode === 'corkboard') {
+            this.updateCorkboardConnections();
+        }
     }
 
     private attachCorkboardNoteEditor(cardEl: HTMLElement, scene: Scene): void {
@@ -1168,6 +1189,9 @@ export class BoardView extends ItemView {
                 }
                 this.corkboardPositions.set(path, { x: newX, y: newY, z: pos.z });
             }
+            if (this.boardMode === 'corkboard') {
+                this.updateCorkboardConnections();
+            }
         };
 
         const onPointerMove = (e: PointerEvent) => {
@@ -1294,6 +1318,14 @@ export class BoardView extends ItemView {
             // keep behaviour robust — minimap failures shouldn't break camera
             // eslint-disable-next-line no-console
             console.error('[StoryLine] minimap update failed', err);
+        }
+        // Update connections rendering if present
+        try {
+            this.updateCorkboardConnections();
+        } catch (err) {
+            // keep behaviour robust — connection failures shouldn't break camera
+            // eslint-disable-next-line no-console
+            console.error('[StoryLine] connections update failed', err);
         }
     }
 
@@ -1482,6 +1514,40 @@ export class BoardView extends ItemView {
         ctx.strokeStyle = 'rgba(255,80,80,0.95)';
         ctx.lineWidth = 2;
         ctx.strokeRect(vx, vy, vw, vh);
+    }
+
+    private updateCorkboardConnections(): void {
+        const svg = this.corkboardConnectionSvg;
+        if (!svg) return;
+
+        const viewport = this.boardEl?.querySelector('.story-line-corkboard-viewport') as HTMLElement | null;
+        if (!viewport) return;
+
+        const viewportRect = viewport.getBoundingClientRect();
+
+        while (svg.firstChild) {
+            svg.removeChild(svg.firstChild);
+        }
+
+        const selectedNodes = Array.from(this.boardEl?.querySelectorAll<HTMLElement>('.story-line-corkboard-node') || [])
+            .filter(node => this.selectedScenes.has(node.dataset.filePath || ''));
+
+        if (selectedNodes.length < 2) return;
+
+        const points = selectedNodes.map(node => {
+            const rect = node.getBoundingClientRect();
+            const x = rect.left + rect.width / 2 - viewportRect.left;
+            const y = rect.top + rect.height / 2 - viewportRect.top;
+            return `${x},${y}`;
+        }).join(' ');
+
+        const polyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+        polyline.setAttribute('points', points);
+        polyline.setAttribute('stroke', 'rgba(255,255,255,0.6)');
+        polyline.setAttribute('stroke-width', '2');
+        polyline.setAttribute('fill', 'none');
+
+        svg.appendChild(polyline);
     }
 
     /**
@@ -2582,6 +2648,11 @@ export class BoardView extends ItemView {
             this.app.workspace.trigger('storyline:scene-focus', scene.filePath);
         } else {
             this.inspectorComponent?.show(scene);
+        }
+
+        // Update corkboard connections when selection changes
+        if (this.boardMode === 'corkboard') {
+            this.updateCorkboardConnections();
         }
 
         // Show/hide bulk action bar
