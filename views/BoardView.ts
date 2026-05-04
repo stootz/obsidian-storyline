@@ -60,6 +60,8 @@ export class BoardView extends ItemView {
     private corkboardZoomPivot = { vx: 0, vy: 0 };
     /** Toolbar zoom label element (corkboard only) */
     private corkboardZoomLabelEl: HTMLElement | null = null;
+    /** Minimap canvas for corkboard (non-interactive) */
+    private corkboardMinimapCanvas: HTMLCanvasElement | null = null;
     private quickNoteLastCreatedAt = 0;
     private quickNoteChainIndex = 0;
     /** Active virtual scrollers — cleaned up on re-render */
@@ -650,7 +652,89 @@ export class BoardView extends ItemView {
         }
 
         const viewport = this.boardEl.createDiv('story-line-corkboard-viewport');
+        // ensure viewport is a positioned container so absolute children (minimap)
+        // are constrained to it and won't be placed off-screen; hide overflow
+        viewport.style.position = 'relative';
+        viewport.style.overflow = 'hidden';
         const canvas = viewport.createDiv('story-line-corkboard-canvas');
+
+        // Create a small non-interactive minimap overlay (bottom-right)
+        const minimapWrap = viewport.createDiv('story-line-corkboard-minimap');
+        // Explicit inline styles required to ensure minimap stays inside viewport
+        minimapWrap.style.position = 'absolute';
+        minimapWrap.style.right = '48px';
+        minimapWrap.style.bottom = '120px';
+        minimapWrap.style.width = '180px';
+        minimapWrap.style.height = '110px';
+        minimapWrap.style.zIndex = '50';
+        minimapWrap.style.pointerEvents = 'auto';
+        minimapWrap.style.boxSizing = 'border-box';
+        minimapWrap.style.border = '1px solid rgba(0,0,0,0.12)';
+        minimapWrap.style.background = 'rgba(255,255,255,0.06)';
+        const stopMinimapEvent = (ev: Event) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+        };
+
+        ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'wheel', 'click'].forEach(type => {
+            minimapWrap.addEventListener(type, stopMinimapEvent, true);
+        });
+        const mmCanvas = minimapWrap.createEl('canvas') as HTMLCanvasElement;
+        mmCanvas.style.cursor = 'pointer';
+        mmCanvas.style.width = '100%';
+        mmCanvas.style.height = '100%';
+        mmCanvas.style.display = 'block';
+        this.corkboardMinimapCanvas = mmCanvas;
+
+        // Capture pointerdown on the minimap wrapper to fully prevent
+        // the corkboard viewport from receiving the event and to perform
+        // click-to-pan behavior. Use capture phase to stop upstream handlers.
+        minimapWrap.addEventListener('pointerdown', (ev: PointerEvent) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+
+            const mm = this.corkboardMinimapCanvas;
+            const viewport = this.boardEl?.querySelector('.story-line-corkboard-viewport') as HTMLElement | null;
+            const canvasEl = this.boardEl?.querySelector('.story-line-corkboard-canvas') as HTMLElement | null;
+            if (!mm || !viewport || !canvasEl) return;
+
+            const rect = mm.getBoundingClientRect();
+            const localX = ev.clientX - rect.left;
+            const localY = ev.clientY - rect.top;
+            const w = rect.width;
+            const h = rect.height;
+
+            const nodes = Array.from(canvasEl.querySelectorAll<HTMLElement>('.story-line-corkboard-node'));
+            if (nodes.length === 0) return;
+            let minX = Number.POSITIVE_INFINITY, minY = Number.POSITIVE_INFINITY, maxX = Number.NEGATIVE_INFINITY, maxY = Number.NEGATIVE_INFINITY;
+            for (const n of nodes) {
+                const left = parseFloat(n.style.left || '0') || 0;
+                const top = parseFloat(n.style.top || '0') || 0;
+                const wN = n.offsetWidth || 200;
+                const hN = n.offsetHeight || 120;
+                minX = Math.min(minX, left);
+                minY = Math.min(minY, top);
+                maxX = Math.max(maxX, left + wN);
+                maxY = Math.max(maxY, top + hN);
+            }
+            const padding = 40;
+            minX -= padding; minY -= padding; maxX += padding; maxY += padding;
+            const bboxW = Math.max(1, maxX - minX);
+            const bboxH = Math.max(1, maxY - minY);
+
+            const scale = Math.min((w - 6) / bboxW, (h - 6) / bboxH);
+            const ox = (w - bboxW * scale) / 2 - minX * scale;
+            const oy = (h - bboxH * scale) / 2 - minY * scale;
+
+            const worldX = (localX - ox) / scale;
+            const worldY = (localY - oy) / scale;
+
+            const zoom = this.corkboardCamera.zoom || 1;
+            this.corkboardCamera.x = viewport.clientWidth / 2 - worldX * zoom;
+            this.corkboardCamera.y = viewport.clientHeight / 2 - worldY * zoom;
+
+            this.applyCorkboardCamera(canvasEl);
+        }, true);
 
         this.corkboardInteractionCleanup = this.enableCorkboardCameraInteraction(viewport, canvas);
         this.applyCorkboardCamera(canvas);
@@ -1133,6 +1217,95 @@ export class BoardView extends ItemView {
         if (this.corkboardZoomLabelEl) {
             this.corkboardZoomLabelEl.textContent = `${Math.round((this.corkboardCamera.zoom || 1) * 100)}%`;
         }
+        // Update minimap rendering if present
+        try {
+            this.updateCorkboardMinimap();
+        } catch (err) {
+            // keep behaviour robust — minimap failures shouldn't break camera
+            // eslint-disable-next-line no-console
+            console.error('[StoryLine] minimap update failed', err);
+        }
+    }
+
+    /** Render/update the simple non-interactive minimap */
+    private updateCorkboardMinimap(): void {
+        const mm = this.corkboardMinimapCanvas;
+        const viewport = this.boardEl?.querySelector('.story-line-corkboard-viewport') as HTMLElement | null;
+        const canvas = this.boardEl?.querySelector('.story-line-corkboard-canvas') as HTMLElement | null;
+        if (!mm || !viewport || !canvas) return;
+
+        const rect = mm.getBoundingClientRect();
+        const dpr = Math.max(1, window.devicePixelRatio || 1);
+        const w = Math.floor(rect.width);
+        const h = Math.floor(rect.height);
+        mm.width = Math.max(1, Math.floor(w * dpr));
+        mm.height = Math.max(1, Math.floor(h * dpr));
+        const ctx = mm.getContext('2d');
+        if (!ctx) return;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, w, h);
+
+        const nodes = Array.from(canvas.querySelectorAll<HTMLElement>('.story-line-corkboard-node'));
+        if (nodes.length === 0) return;
+
+        // Compute world bounding box of visible nodes
+        let minX = Number.POSITIVE_INFINITY, minY = Number.POSITIVE_INFINITY, maxX = Number.NEGATIVE_INFINITY, maxY = Number.NEGATIVE_INFINITY;
+        for (const n of nodes) {
+            const left = parseFloat(n.style.left || '0') || 0;
+            const top = parseFloat(n.style.top || '0') || 0;
+            const wN = n.offsetWidth || 200;
+            const hN = n.offsetHeight || 120;
+            minX = Math.min(minX, left);
+            minY = Math.min(minY, top);
+            maxX = Math.max(maxX, left + wN);
+            maxY = Math.max(maxY, top + hN);
+        }
+
+        // Add a small padding in world units
+        const padding = 40;
+        minX -= padding; minY -= padding; maxX += padding; maxY += padding;
+
+        const bboxW = Math.max(1, maxX - minX);
+        const bboxH = Math.max(1, maxY - minY);
+
+        // Compute scale from world -> minimap
+        const scale = Math.min((w - 6) / bboxW, (h - 6) / bboxH);
+        const ox = (w - bboxW * scale) / 2 - minX * scale;
+        const oy = (h - bboxH * scale) / 2 - minY * scale;
+
+        // Draw background
+        ctx.fillStyle = 'rgba(0,0,0,0.06)';
+        ctx.fillRect(0, 0, w, h);
+
+        // Draw nodes as small rectangles
+        ctx.fillStyle = 'rgba(50,50,50,0.9)';
+        for (const n of nodes) {
+            const left = parseFloat(n.style.left || '0') || 0;
+            const top = parseFloat(n.style.top || '0') || 0;
+            const wN = n.offsetWidth || 200;
+            const hN = n.offsetHeight || 120;
+            const x = left * scale + ox;
+            const y = top * scale + oy;
+            const rw = Math.max(2, wN * scale);
+            const rh = Math.max(2, hN * scale);
+            ctx.fillRect(x, y, rw, rh);
+        }
+
+        // Draw viewport rectangle in world coords
+        const zoom = this.corkboardCamera.zoom || 1;
+        const worldLeft = -this.corkboardCamera.x / zoom;
+        const worldTop = -this.corkboardCamera.y / zoom;
+        const worldW = viewport.clientWidth / zoom;
+        const worldH = viewport.clientHeight / zoom;
+
+        const vx = worldLeft * scale + ox;
+        const vy = worldTop * scale + oy;
+        const vw = worldW * scale;
+        const vh = worldH * scale;
+
+        ctx.strokeStyle = 'rgba(255,80,80,0.95)';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(vx, vy, vw, vh);
     }
 
     /**
