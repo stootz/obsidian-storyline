@@ -688,7 +688,7 @@ export class BoardView extends ItemView {
 
         // Capture pointerdown on the minimap wrapper to fully prevent
         // the corkboard viewport from receiving the event and to perform
-        // click-to-pan behavior. Use capture phase to stop upstream handlers.
+        // click-to-pan and drag-to-pan behavior. Use capture phase to stop upstream handlers.
         minimapWrap.addEventListener('pointerdown', (ev: PointerEvent) => {
             ev.preventDefault();
             ev.stopPropagation();
@@ -698,42 +698,71 @@ export class BoardView extends ItemView {
             const canvasEl = this.boardEl?.querySelector('.story-line-corkboard-canvas') as HTMLElement | null;
             if (!mm || !viewport || !canvasEl) return;
 
-            const rect = mm.getBoundingClientRect();
-            const localX = ev.clientX - rect.left;
-            const localY = ev.clientY - rect.top;
-            const w = rect.width;
-            const h = rect.height;
+            const computeAndCenter = (clientX: number, clientY: number) => {
+                const rect = mm.getBoundingClientRect();
+                const localX = clientX - rect.left;
+                const localY = clientY - rect.top;
+                const w = rect.width;
+                const h = rect.height;
 
-            const nodes = Array.from(canvasEl.querySelectorAll<HTMLElement>('.story-line-corkboard-node'));
-            if (nodes.length === 0) return;
-            let minX = Number.POSITIVE_INFINITY, minY = Number.POSITIVE_INFINITY, maxX = Number.NEGATIVE_INFINITY, maxY = Number.NEGATIVE_INFINITY;
-            for (const n of nodes) {
-                const left = parseFloat(n.style.left || '0') || 0;
-                const top = parseFloat(n.style.top || '0') || 0;
-                const wN = n.offsetWidth || 200;
-                const hN = n.offsetHeight || 120;
-                minX = Math.min(minX, left);
-                minY = Math.min(minY, top);
-                maxX = Math.max(maxX, left + wN);
-                maxY = Math.max(maxY, top + hN);
-            }
-            const padding = 40;
-            minX -= padding; minY -= padding; maxX += padding; maxY += padding;
-            const bboxW = Math.max(1, maxX - minX);
-            const bboxH = Math.max(1, maxY - minY);
+                const nodes = Array.from(canvasEl.querySelectorAll<HTMLElement>('.story-line-corkboard-node'));
+                if (nodes.length === 0) return;
+                let minX = Number.POSITIVE_INFINITY, minY = Number.POSITIVE_INFINITY, maxX = Number.NEGATIVE_INFINITY, maxY = Number.NEGATIVE_INFINITY;
+                for (const n of nodes) {
+                    const left = parseFloat(n.style.left || '0') || 0;
+                    const top = parseFloat(n.style.top || '0') || 0;
+                    const wN = n.offsetWidth || 200;
+                    const hN = n.offsetHeight || 120;
+                    minX = Math.min(minX, left);
+                    minY = Math.min(minY, top);
+                    maxX = Math.max(maxX, left + wN);
+                    maxY = Math.max(maxY, top + hN);
+                }
+                const padding = 40;
+                minX -= padding; minY -= padding; maxX += padding; maxY += padding;
+                const bboxW = Math.max(1, maxX - minX);
+                const bboxH = Math.max(1, maxY - minY);
 
-            const scale = Math.min((w - 6) / bboxW, (h - 6) / bboxH);
-            const ox = (w - bboxW * scale) / 2 - minX * scale;
-            const oy = (h - bboxH * scale) / 2 - minY * scale;
+                const scale = Math.min((w - 6) / bboxW, (h - 6) / bboxH);
+                const ox = (w - bboxW * scale) / 2 - minX * scale;
+                const oy = (h - bboxH * scale) / 2 - minY * scale;
 
-            const worldX = (localX - ox) / scale;
-            const worldY = (localY - oy) / scale;
+                const worldX = (localX - ox) / scale;
+                const worldY = (localY - oy) / scale;
 
-            const zoom = this.corkboardCamera.zoom || 1;
-            this.corkboardCamera.x = viewport.clientWidth / 2 - worldX * zoom;
-            this.corkboardCamera.y = viewport.clientHeight / 2 - worldY * zoom;
+                const zoom = this.corkboardCamera.zoom || 1;
+                this.corkboardCamera.x = viewport.clientWidth / 2 - worldX * zoom;
+                this.corkboardCamera.y = viewport.clientHeight / 2 - worldY * zoom;
+            };
 
+            // Apply immediately for the initial pointerdown (click behavior)
+            computeAndCenter(ev.clientX, ev.clientY);
             this.applyCorkboardCamera(canvasEl);
+
+            // Start drag tracking
+            let dragging = true;
+
+            const onMove = (e: PointerEvent) => {
+                if (!dragging) return;
+                e.preventDefault();
+                e.stopPropagation();
+                computeAndCenter(e.clientX, e.clientY);
+                this.applyCorkboardCamera(canvasEl);
+            };
+
+            const onUp = (e: PointerEvent) => {
+                if (!dragging) return;
+                dragging = false;
+                e.preventDefault();
+                e.stopPropagation();
+                window.removeEventListener('pointermove', onMove, true);
+                window.removeEventListener('pointerup', onUp, true);
+                window.removeEventListener('pointercancel', onUp, true);
+            };
+
+            window.addEventListener('pointermove', onMove, true);
+            window.addEventListener('pointerup', onUp, true);
+            window.addEventListener('pointercancel', onUp, true);
         }, true);
 
         this.corkboardInteractionCleanup = this.enableCorkboardCameraInteraction(viewport, canvas);
@@ -1146,6 +1175,13 @@ export class BoardView extends ItemView {
                 applyDragPosition();
             }
 
+            // Remove global listeners added during pointerdown
+            try {
+                window.removeEventListener('pointermove', onPointerMove, true);
+                window.removeEventListener('pointerup', onPointerUp, true);
+                window.removeEventListener('pointercancel', onPointerUp, true);
+            } catch (_) {}
+
             if (moved) {
                 this.corkboardJustDragged.add(scenePath);
                 window.setTimeout(() => this.corkboardJustDragged.delete(scenePath), 180);
@@ -1203,6 +1239,11 @@ export class BoardView extends ItemView {
             }
 
             node.setPointerCapture(e.pointerId);
+            // Ensure we still receive pointer events even if pointer leaves
+            // the node or capture is interrupted — listen on window (capture).
+            window.addEventListener('pointermove', onPointerMove, true);
+            window.addEventListener('pointerup', onPointerUp, true);
+            window.addEventListener('pointercancel', onPointerUp, true);
             e.preventDefault();
             e.stopPropagation();
         });
