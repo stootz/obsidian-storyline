@@ -60,6 +60,8 @@ export class BoardView extends ItemView {
     private corkboardZoomPivot = { vx: 0, vy: 0 };
     /** Toolbar zoom label element (corkboard only) */
     private corkboardZoomLabelEl: HTMLElement | null = null;
+    /** Toolbar align controls wrapper for corkboard */
+    private corkboardAlignControlsEl: HTMLElement | null = null;
     /** Minimap canvas for corkboard (non-interactive) */
     private corkboardMinimapCanvas: HTMLCanvasElement | null = null;
     private quickNoteLastCreatedAt = 0;
@@ -225,8 +227,9 @@ export class BoardView extends ItemView {
      * Render the toolbar
      */
     private renderToolbar(toolbar: HTMLElement): void {
-        // Clear any previous reference to toolbar zoom label before re-render
+        // Clear any previous reference to toolbar controls before re-render
         this.corkboardZoomLabelEl = null;
+        this.corkboardAlignControlsEl = null;
         // Title + project selector row
         const titleRow = toolbar.createDiv('story-line-title-row');
         titleRow.createEl('h3', {
@@ -432,6 +435,32 @@ export class BoardView extends ItemView {
         snapManage.addEventListener('click', () => {
             openManageSnapshotsModal(this.plugin.app, this.plugin.viewSnapshotService);
         });
+
+        // Corkboard-only align controls (visible when 2+ selected)
+        if (this.boardMode === 'corkboard') {
+            const alignWrap = controls.createDiv('story-line-corkboard-align');
+            alignWrap.style.display = this.selectedScenes.size >= 2 ? 'flex' : 'none';
+            alignWrap.style.gap = '4px';
+            alignWrap.style.alignItems = 'center';
+            this.corkboardAlignControlsEl = alignWrap;
+
+            const addAlignButton = (label: string, tooltip: string, handler: () => void) => {
+                const btn = alignWrap.createEl('button', { cls: 'clickable-icon' });
+                btn.createSpan({ text: label });
+                attachTooltip(btn, tooltip);
+                btn.addEventListener('click', () => {
+                    handler();
+                });
+                return btn;
+            };
+
+            addAlignButton('Left', 'Align selected cards to the left', () => this.alignSelectedCorkboardNodes('left'));
+            addAlignButton('Top', 'Align selected cards to the top', () => this.alignSelectedCorkboardNodes('top'));
+            addAlignButton('H‑Center', 'Align selected cards horizontally', () => this.alignSelectedCorkboardNodes('h-center'));
+            addAlignButton('V‑Center', 'Align selected cards vertically', () => this.alignSelectedCorkboardNodes('v-center'));
+            addAlignButton('Distribute H', 'Distribute selected cards horizontally', () => this.alignSelectedCorkboardNodes('distribute-h'));
+            addAlignButton('Distribute V', 'Distribute selected cards vertically', () => this.alignSelectedCorkboardNodes('distribute-v'));
+        }
 
         // Corkboard-only zoom controls (simple: -, percent, +)
         if (this.boardMode === 'corkboard') {
@@ -1268,6 +1297,107 @@ export class BoardView extends ItemView {
         }
     }
 
+    private getSelectedVisibleCorkboardNodes(): HTMLElement[] {
+        const canvas = this.boardEl?.querySelector('.story-line-corkboard-canvas') as HTMLElement | null;
+        if (!canvas) return [];
+        return Array.from(canvas.querySelectorAll<HTMLElement>('.story-line-corkboard-node'))
+            .filter(node => this.selectedScenes.has(node.dataset.filePath || ''));
+    }
+
+    private alignSelectedCorkboardNodes(action: 'left' | 'top' | 'h-center' | 'v-center' | 'distribute-h' | 'distribute-v'): void {
+        const nodes = this.getSelectedVisibleCorkboardNodes();
+        if (nodes.length < 2) return;
+
+        const items = nodes.map(node => {
+            const left = parseFloat(node.style.left || '0') || 0;
+            const top = parseFloat(node.style.top || '0') || 0;
+            const width = node.offsetWidth || 200;
+            const height = node.offsetHeight || 120;
+            return {
+                node,
+                path: node.dataset.filePath || '',
+                left,
+                top,
+                width,
+                height,
+                centerX: left + width / 2,
+                centerY: top + height / 2,
+                z: this.corkboardPositions.get(node.dataset.filePath || '')?.z ?? 1,
+                h: this.corkboardPositions.get(node.dataset.filePath || '')?.h,
+            };
+        });
+
+        if (items.length < 2) return;
+
+        const centerXs = items.map(item => item.centerX);
+        const centerYs = items.map(item => item.centerY);
+        const lefts = items.map(item => item.left);
+        const tops = items.map(item => item.top);
+        const minLeft = Math.min(...lefts);
+        const minTop = Math.min(...tops);
+        const avgCenterX = centerXs.reduce((sum, x) => sum + x, 0) / centerXs.length;
+        const avgCenterY = centerYs.reduce((sum, y) => sum + y, 0) / centerYs.length;
+        const sortedByLeft = [...items].sort((a, b) => a.left - b.left);
+        const sortedByTop = [...items].sort((a, b) => a.top - b.top);
+
+        const updatePosition = (item: typeof items[number], nextLeft: number, nextTop: number) => {
+            item.node.style.left = `${nextLeft}px`;
+            item.node.style.top = `${nextTop}px`;
+            this.corkboardPositions.set(item.path, {
+                x: nextLeft,
+                y: nextTop,
+                z: item.z,
+                h: item.h,
+            });
+        };
+
+        if (action === 'left') {
+            for (const item of items) {
+                updatePosition(item, minLeft, item.top);
+            }
+        } else if (action === 'top') {
+            for (const item of items) {
+                updatePosition(item, item.left, minTop);
+            }
+        } else if (action === 'h-center') {
+            for (const item of items) {
+                updatePosition(item, avgCenterX - item.width / 2, item.top);
+            }
+        } else if (action === 'v-center') {
+            for (const item of items) {
+                updatePosition(item, item.left, avgCenterY - item.height / 2);
+            }
+        } else if (action === 'distribute-h') {
+            const minCenter = Math.min(...centerXs);
+            const maxCenter = Math.max(...centerXs);
+            const step = (maxCenter - minCenter) / (items.length - 1);
+            sortedByLeft.forEach((item, index) => {
+                const nextCenter = minCenter + step * index;
+                updatePosition(item, nextCenter - item.width / 2, item.top);
+            });
+        } else if (action === 'distribute-v') {
+            const minCenter = Math.min(...centerYs);
+            const maxCenter = Math.max(...centerYs);
+            const step = (maxCenter - minCenter) / (items.length - 1);
+            sortedByTop.forEach((item, index) => {
+                const nextCenter = minCenter + step * index;
+                updatePosition(item, item.left, nextCenter - item.height / 2);
+            });
+        }
+
+        this.schedulePersistCorkboardLayout();
+        this.refreshBoard();
+    }
+
+    private updateCorkboardAlignControls(): void {
+        if (!this.corkboardAlignControlsEl) return;
+        const visible = this.boardMode === 'corkboard' && this.selectedScenes.size >= 2;
+        this.corkboardAlignControlsEl.style.display = visible ? 'flex' : 'none';
+        Array.from(this.corkboardAlignControlsEl.querySelectorAll('button')).forEach((btn) => {
+            btn.toggleAttribute('disabled', !visible);
+        });
+    }
+
     /** Render/update the simple non-interactive minimap */
     private updateCorkboardMinimap(): void {
         const mm = this.corkboardMinimapCanvas;
@@ -1318,8 +1448,7 @@ export class BoardView extends ItemView {
         ctx.fillStyle = 'rgba(0,0,0,0.06)';
         ctx.fillRect(0, 0, w, h);
 
-        // Draw nodes as small rectangles
-        ctx.fillStyle = 'rgba(50,50,50,0.9)';
+        // Draw nodes as small rectangles. Highlight selected nodes brighter.
         for (const n of nodes) {
             const left = parseFloat(n.style.left || '0') || 0;
             const top = parseFloat(n.style.top || '0') || 0;
@@ -1329,6 +1458,12 @@ export class BoardView extends ItemView {
             const y = top * scale + oy;
             const rw = Math.max(2, wN * scale);
             const rh = Math.max(2, hN * scale);
+            const path = n.dataset.filePath || '';
+            if (this.selectedScenes.has(path)) {
+                ctx.fillStyle = 'rgba(255,80,80,0.95)';
+            } else {
+                ctx.fillStyle = 'rgba(50,50,50,0.5)';
+            }
             ctx.fillRect(x, y, rw, rh);
         }
 
@@ -2461,11 +2596,15 @@ export class BoardView extends ItemView {
 
         if (this.selectedScenes.size < 2) {
             this.bulkBarEl.style.display = 'none';
+            if (this.corkboardAlignControlsEl) {
+                this.corkboardAlignControlsEl.style.display = 'none';
+            }
             return;
         }
 
         this.bulkBarEl.empty();
         this.bulkBarEl.style.display = 'flex';
+        this.updateCorkboardAlignControls();
 
         const count = this.selectedScenes.size;
         this.bulkBarEl.createSpan({
