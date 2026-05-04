@@ -445,6 +445,84 @@ export class BoardView extends ItemView {
                 if (this.corkboardZoomLabelEl) this.corkboardZoomLabelEl.textContent = `${Math.round((this.corkboardCamera.zoom || 1) * 100)}%`;
             });
 
+            // Reset (1:1) button
+            const resetBtn = zoomWrap.createEl('button', { cls: 'clickable-icon' });
+            resetBtn.createSpan({ text: '1:1' });
+            attachTooltip(resetBtn, 'Reset zoom to 100% and center');
+            resetBtn.addEventListener('click', () => {
+                const canvas = this.boardEl?.querySelector('.story-line-corkboard-canvas') as HTMLElement | null;
+                const viewport = this.boardEl?.querySelector('.story-line-corkboard-viewport') as HTMLElement | null;
+                if (!canvas || !viewport) return;
+                // Determine target nodes: selected, else all visible nodes
+                const nodes = Array.from(canvas.querySelectorAll<HTMLElement>('.story-line-corkboard-node'))
+                    .filter(n => {
+                        if (this.selectedScenes.size > 0) return this.selectedScenes.has(n.dataset.filePath || '');
+                        return true;
+                    });
+                if (nodes.length === 0) return;
+                // Compute world bounding box using node.style left/top and offset sizes
+                let minX = Number.POSITIVE_INFINITY, minY = Number.POSITIVE_INFINITY, maxX = Number.NEGATIVE_INFINITY, maxY = Number.NEGATIVE_INFINITY;
+                for (const n of nodes) {
+                    const left = parseFloat(n.style.left || '0') || 0;
+                    const top = parseFloat(n.style.top || '0') || 0;
+                    const w = n.offsetWidth || 200;
+                    const h = n.offsetHeight || 120;
+                    minX = Math.min(minX, left);
+                    minY = Math.min(minY, top);
+                    maxX = Math.max(maxX, left + w);
+                    maxY = Math.max(maxY, top + h);
+                }
+                const worldCenterX = (minX + maxX) / 2;
+                const worldCenterY = (minY + maxY) / 2;
+                this.corkboardCamera.zoom = 1;
+                const vw = viewport.clientWidth;
+                const vh = viewport.clientHeight;
+                this.corkboardCamera.x = vw / 2 - worldCenterX * this.corkboardCamera.zoom;
+                this.corkboardCamera.y = vh / 2 - worldCenterY * this.corkboardCamera.zoom;
+                this.applyCorkboardCamera(canvas);
+            });
+
+            // Fit button
+            const fitBtn = zoomWrap.createEl('button', { cls: 'clickable-icon' });
+            fitBtn.createSpan({ text: 'Fit' });
+            attachTooltip(fitBtn, 'Fit all visible cards into view');
+            fitBtn.addEventListener('click', () => {
+                const canvas = this.boardEl?.querySelector('.story-line-corkboard-canvas') as HTMLElement | null;
+                const viewport = this.boardEl?.querySelector('.story-line-corkboard-viewport') as HTMLElement | null;
+                if (!canvas || !viewport) return;
+                const nodes = Array.from(canvas.querySelectorAll<HTMLElement>('.story-line-corkboard-node'))
+                    .filter(n => {
+                        // Exclude nodes that are not currently displayed in canvas
+                        return true;
+                    });
+                if (nodes.length === 0) return;
+                let minX = Number.POSITIVE_INFINITY, minY = Number.POSITIVE_INFINITY, maxX = Number.NEGATIVE_INFINITY, maxY = Number.NEGATIVE_INFINITY;
+                for (const n of nodes) {
+                    const left = parseFloat(n.style.left || '0') || 0;
+                    const top = parseFloat(n.style.top || '0') || 0;
+                    const w = n.offsetWidth || 200;
+                    const h = n.offsetHeight || 120;
+                    minX = Math.min(minX, left);
+                    minY = Math.min(minY, top);
+                    maxX = Math.max(maxX, left + w);
+                    maxY = Math.max(maxY, top + h);
+                }
+                const bboxW = Math.max(1, maxX - minX);
+                const bboxH = Math.max(1, maxY - minY);
+                const padding = 80;
+                const vw = viewport.clientWidth;
+                const vh = viewport.clientHeight;
+                const scaleX = vw / (bboxW + padding);
+                const scaleY = vh / (bboxH + padding);
+                const targetZoom = Math.max(0.35, Math.min(2.8, Math.min(scaleX, scaleY)));
+                const worldCenterX = (minX + maxX) / 2;
+                const worldCenterY = (minY + maxY) / 2;
+                this.corkboardCamera.zoom = targetZoom;
+                this.corkboardCamera.x = vw / 2 - worldCenterX * this.corkboardCamera.zoom;
+                this.corkboardCamera.y = vh / 2 - worldCenterY * this.corkboardCamera.zoom;
+                this.applyCorkboardCamera(canvas);
+            });
+
             const zoomLabel = zoomWrap.createDiv('story-line-corkboard-zoom-label');
             zoomLabel.textContent = `${Math.round((this.corkboardCamera.zoom || 1) * 100)}%`;
             this.corkboardZoomLabelEl = zoomLabel;
