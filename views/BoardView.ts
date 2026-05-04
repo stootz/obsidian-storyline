@@ -62,6 +62,8 @@ export class BoardView extends ItemView {
     private corkboardZoomLabelEl: HTMLElement | null = null;
     /** Toolbar align controls wrapper for corkboard */
     private corkboardAlignControlsEl: HTMLElement | null = null;
+    /** Toggle for temporary corkboard connection lines */
+    private corkboardConnectionsEnabled: boolean = false;
     /** SVG overlay for temporary corkboard connections */
     private corkboardConnectionSvg: SVGSVGElement | null = null;
     /** Minimap canvas for corkboard (non-interactive) */
@@ -462,6 +464,21 @@ export class BoardView extends ItemView {
             addAlignButton('V‑Center', 'Align selected cards vertically', () => this.alignSelectedCorkboardNodes('v-center'));
             addAlignButton('Distribute H', 'Distribute selected cards horizontally', () => this.alignSelectedCorkboardNodes('distribute-h'));
             addAlignButton('Distribute V', 'Distribute selected cards vertically', () => this.alignSelectedCorkboardNodes('distribute-v'));
+        }
+
+        // Corkboard connections toggle
+        if (this.boardMode === 'corkboard') {
+            const connectionsBtn = controls.createEl('button', { cls: 'clickable-icon' });
+            attachTooltip(connectionsBtn, 'Toggle connection lines between selected cards');
+            obsidian.setIcon(connectionsBtn, 'link');
+            if (this.corkboardConnectionsEnabled) {
+                connectionsBtn.addClass('is-active');
+            }
+            connectionsBtn.addEventListener('click', () => {
+                this.corkboardConnectionsEnabled = !this.corkboardConnectionsEnabled;
+                connectionsBtn.toggleClass('is-active', this.corkboardConnectionsEnabled);
+                this.updateCorkboardConnections();
+            });
         }
 
         // Corkboard-only zoom controls (simple: -, percent, +)
@@ -1528,6 +1545,8 @@ export class BoardView extends ItemView {
         while (svg.firstChild) {
             svg.removeChild(svg.firstChild);
         }
+
+        if (!this.corkboardConnectionsEnabled) return;
 
         const selectedNodes = Array.from(this.boardEl?.querySelectorAll<HTMLElement>('.story-line-corkboard-node') || [])
             .filter(node => this.selectedScenes.has(node.dataset.filePath || ''));
