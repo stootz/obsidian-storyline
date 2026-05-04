@@ -64,6 +64,12 @@ export class BoardView extends ItemView {
     private corkboardAlignControlsEl: HTMLElement | null = null;
     /** Toggle for temporary corkboard connection lines */
     private corkboardConnectionsEnabled: boolean = false;
+    /** Spotlight mode: enabled flag */
+    private corkboardSpotlightEnabled: boolean = false;
+    /** Spotlight field: 'pov' | 'characters' | 'location' | 'tags' | 'status' | 'act' | null */
+    private corkboardSpotlightField: string | null = null;
+    /** Spotlight value: the specific value to highlight */
+    private corkboardSpotlightValue: string | null = null;
     /** SVG overlay for temporary corkboard connections */
     private corkboardConnectionSvg: SVGSVGElement | null = null;
     /** Saved connections: Map of id to { from: filePath, to: filePath } */
@@ -160,6 +166,10 @@ export class BoardView extends ItemView {
             this.plugin
         );
         this.filtersComponent.render();
+
+        if (this.boardMode === 'corkboard') {
+            this.renderSpotlightControls(filterContainer);
+        }
 
         // In Kanban mode, add Group by dropdown to the filter bar
         if (this.boardMode === 'kanban') {
@@ -605,6 +615,157 @@ export class BoardView extends ItemView {
     }
 
     /**
+     * Render spotlight controls in the filter area
+     */
+    private renderSpotlightControls(filterContainer: HTMLElement): void {
+        const spotlightWrapper = filterContainer.createDiv('story-line-spotlight-wrapper');
+        spotlightWrapper.style.display = 'flex';
+        spotlightWrapper.style.alignItems = 'center';
+        spotlightWrapper.style.gap = '12px';
+        spotlightWrapper.style.marginTop = '8px';
+        spotlightWrapper.style.paddingBottom = '8px';
+        spotlightWrapper.style.borderBottom = '1px solid rgba(0,0,0,0.1)';
+
+        // Main spotlight toggle
+        const spotlightToggle = spotlightWrapper.createEl('label', { cls: 'sl-toggle-wrap' });
+        spotlightToggle.createSpan({ cls: 'sl-toggle-label', text: 'Spotlight' });
+        const spotlightCheckbox = spotlightToggle.createEl('input', { type: 'checkbox' });
+        spotlightCheckbox.checked = this.corkboardSpotlightEnabled;
+        spotlightToggle.createSpan({ cls: 'sl-toggle-track' });
+
+        // Field selector (visible when spotlight enabled)
+        const fieldSelectContainer = spotlightWrapper.createDiv('story-line-spotlight-field-select');
+        fieldSelectContainer.style.display = this.corkboardSpotlightEnabled ? 'flex' : 'none';
+        fieldSelectContainer.style.alignItems = 'center';
+        fieldSelectContainer.style.gap = '6px';
+        const fieldLabel = fieldSelectContainer.createSpan({ text: 'Field:' });
+        fieldLabel.style.fontSize = '12px';
+        fieldLabel.style.color = 'var(--text-muted)';
+        const fieldSelect = fieldSelectContainer.createEl('select', { cls: 'dropdown' });
+        fieldSelect.style.fontSize = '12px';
+        fieldSelect.style.padding = '4px';
+        const fieldOptions = [
+            { value: '', label: '— none —' },
+            { value: 'pov', label: 'POV' },
+            { value: 'status', label: 'Status' },
+            { value: 'act', label: 'Act' },
+            { value: 'characters', label: 'Characters' },
+            { value: 'location', label: 'Location' },
+            { value: 'tags', label: 'Tags' },
+        ];
+        fieldOptions.forEach(opt => {
+            const option = fieldSelect.createEl('option', { text: opt.label, value: opt.value });
+            if (opt.value === (this.corkboardSpotlightField || '')) option.selected = true;
+        });
+
+        // Value selector (visible when field is selected)
+        const valueSelectContainer = spotlightWrapper.createDiv('story-line-spotlight-value-select');
+        valueSelectContainer.style.display = (this.corkboardSpotlightEnabled && this.corkboardSpotlightField) ? 'flex' : 'none';
+        valueSelectContainer.style.alignItems = 'center';
+        valueSelectContainer.style.gap = '6px';
+        const valueLabel = valueSelectContainer.createSpan({ text: 'Value:' });
+        valueLabel.style.fontSize = '12px';
+        valueLabel.style.color = 'var(--text-muted)';
+        const valueSelect = valueSelectContainer.createEl('select', { cls: 'dropdown' });
+        valueSelect.style.fontSize = '12px';
+        valueSelect.style.padding = '4px';
+
+        const updateValueSelect = () => {
+            valueSelect.empty();
+            valueSelect.createEl('option', { text: '— select —', value: '' }).selected = true;
+            if (!this.corkboardSpotlightField) return;
+            const values = this.getSpotlightFieldValues(this.corkboardSpotlightField);
+            values.forEach(val => {
+                const opt = valueSelect.createEl('option', { text: val, value: val });
+                if (val === this.corkboardSpotlightValue) opt.selected = true;
+            });
+        };
+        updateValueSelect();
+
+        fieldSelect.addEventListener('change', () => {
+            this.corkboardSpotlightField = fieldSelect.value || null;
+            this.corkboardSpotlightValue = null;
+            valueSelectContainer.style.display = this.corkboardSpotlightField ? 'flex' : 'none';
+            updateValueSelect();
+            this.refreshBoard();
+        });
+
+        valueSelect.addEventListener('change', () => {
+            this.corkboardSpotlightValue = valueSelect.value || null;
+            this.refreshBoard();
+        });
+
+        spotlightCheckbox.addEventListener('change', () => {
+            this.corkboardSpotlightEnabled = spotlightCheckbox.checked;
+            fieldSelectContainer.style.display = this.corkboardSpotlightEnabled ? 'flex' : 'none';
+            valueSelectContainer.style.display = (this.corkboardSpotlightEnabled && this.corkboardSpotlightField) ? 'flex' : 'none';
+            this.refreshBoard();
+        });
+
+        // Clear button
+        const clearBtn = spotlightWrapper.createEl('button', {
+            cls: 'mod-ghost',
+            text: '✕ Clear',
+        });
+        clearBtn.style.display = this.corkboardSpotlightEnabled ? 'inline-block' : 'none';
+        clearBtn.style.fontSize = '12px';
+        clearBtn.addEventListener('click', () => {
+            this.corkboardSpotlightEnabled = false;
+            this.corkboardSpotlightField = null;
+            this.corkboardSpotlightValue = null;
+            spotlightCheckbox.checked = false;
+            fieldSelect.value = '';
+            valueSelect.value = '';
+            fieldSelectContainer.style.display = 'none';
+            valueSelectContainer.style.display = 'none';
+            clearBtn.style.display = 'none';
+            this.refreshBoard();
+        });
+    }
+
+    private getSpotlightFieldValues(field: string): string[] {
+        switch (field) {
+            case 'pov':
+                return this.sceneManager.getUniqueValues('pov');
+            case 'status':
+                return this.sceneManager.getUniqueValues('status');
+            case 'act':
+                return this.sceneManager.getUniqueValues('act').sort();
+            case 'characters':
+                return this.sceneManager.getAllCharacters();
+            case 'location':
+                return this.sceneManager.getUniqueValues('location');
+            case 'tags':
+                return this.sceneManager.getAllTags();
+            default:
+                return [];
+        }
+    }
+
+    private isSceneSpotlightMatch(scene: Scene): boolean {
+        if (!this.corkboardSpotlightEnabled || !this.corkboardSpotlightField || !this.corkboardSpotlightValue) {
+            return false;
+        }
+        const value = this.corkboardSpotlightValue;
+        switch (this.corkboardSpotlightField) {
+            case 'pov':
+                return scene.pov === value;
+            case 'status':
+                return scene.status === value;
+            case 'act':
+                return String(scene.act ?? '') === String(value);
+            case 'characters':
+                return scene.characters?.includes(value) ?? false;
+            case 'location':
+                return scene.location === value;
+            case 'tags':
+                return scene.tags?.includes(value) ?? false;
+            default:
+                return false;
+        }
+    }
+
+    /**
      * Save scroll positions of all Kanban column bodies before a re-render.
      */
     private saveColumnScrollPositions(): void {
@@ -638,6 +799,27 @@ export class BoardView extends ItemView {
     /**
      * Render the board columns
      */
+    private isSpotlightFilterActive(): boolean {
+        if (!this.corkboardSpotlightEnabled) return false;
+        const filter = this.currentFilter;
+        if (!filter) return false;
+        return !!(
+            filter.status?.length ||
+            filter.act?.length ||
+            filter.chapter?.length ||
+            filter.pov?.length ||
+            filter.characters?.length ||
+            filter.locations?.length ||
+            filter.tags?.length ||
+            (filter.searchText && filter.searchText.trim()) ||
+            Object.values(filter.customFields || {}).some(arr => Array.isArray(arr) && arr.length > 0)
+        );
+    }
+
+    private getSpotlightMatchPaths(): Set<string> {
+        return new Set(this.sceneManager.getFilteredScenes(this.currentFilter, this.currentSort).map(scene => scene.filePath));
+    }
+
     private renderBoard(): void {
         if (!this.boardEl) return;
         this.boardEl.removeClass('story-line-corkboard');
@@ -695,9 +877,6 @@ export class BoardView extends ItemView {
         if (!this.plugin.settings.showScenesInCorkboard) {
             scenes = scenes.filter(scene => this.isCorkboardNoteScene(scene));
         }
-        // Only render nodes for visible scenes, but keep positions for
-        // filtered-out scenes so they don't lose their layout.
-        const validPaths = new Set(scenes.map(s => s.filePath));
 
         const currentMaxZ = () => {
             let max = 0;
@@ -720,16 +899,22 @@ export class BoardView extends ItemView {
         viewport.style.position = 'relative';
         viewport.style.overflow = 'hidden';
         const canvas = viewport.createDiv('story-line-corkboard-canvas');
+        // Ensure canvas (and its absolutely-positioned card nodes) stack above the
+        // connection/journey SVG overlay
+        canvas.style.position = 'relative';
+        canvas.style.zIndex = '2';
 
-        // Create SVG overlay for temporary corkboard connections (above canvas, below cards)
+        // Create SVG overlay for temporary corkboard connections (above canvas background, below cards)
         const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
         svg.style.position = 'absolute';
         svg.style.inset = '0';
         svg.style.width = '100%';
         svg.style.height = '100%';
         svg.style.overflow = 'visible';
+        // Ensure the overlay never blocks card interactions
         svg.style.pointerEvents = 'none';
-        svg.style.zIndex = '10'; // Above canvas background, below cards (cards are 1+)
+        // Place behind cards but above corkboard background
+        svg.style.zIndex = '1';
         svg.setAttribute('width', '100%');
         svg.setAttribute('height', '100%');
         svg.setAttribute('preserveAspectRatio', 'none');
@@ -873,7 +1058,8 @@ export class BoardView extends ItemView {
             node.setAttribute('data-file-path', scene.filePath);
             node.style.left = `${pos.x}px`;
             node.style.top = `${pos.y}px`;
-            node.style.zIndex = String(pos.z ?? 1);
+            // Ensure nodes always render above connection/journey SVG (z=1)
+            node.style.zIndex = String(Math.max(2, pos.z ?? 1));
             if (this.isCorkboardNoteScene(scene)) {
                 node.addClass('story-line-corkboard-note-node');
             }
@@ -902,6 +1088,18 @@ export class BoardView extends ItemView {
 
             if (this.selectedScenes.has(scene.filePath)) {
                 cardEl.addClass('selected');
+            }
+
+            // Apply spotlight visual effects if enabled
+            if (this.corkboardSpotlightEnabled && this.corkboardSpotlightField && this.corkboardSpotlightValue) {
+                const isSpotlightMatch = this.isSceneSpotlightMatch(scene);
+                node.style.opacity = isSpotlightMatch ? '1' : '0.55';
+                node.style.filter = isSpotlightMatch ? 'drop-shadow(0 0 20px rgba(255, 230, 120, 0.8))' : 'brightness(0.75)';
+                node.style.transition = 'opacity 180ms ease, filter 180ms ease';
+            } else {
+                node.style.opacity = '';
+                node.style.filter = '';
+                node.style.transition = '';
             }
 
             // Restore persisted height from layout data (only for note cards)
@@ -1561,6 +1759,11 @@ export class BoardView extends ItemView {
             svg.removeChild(svg.firstChild);
         }
 
+        // Render spotlight journey lines (if enabled)
+        if (this.corkboardSpotlightEnabled && this.corkboardSpotlightField && this.corkboardSpotlightValue) {
+            this.drawSpotlightJourneyLines(svg, viewportRect);
+        }
+
         if (!this.corkboardConnectionsEnabled) return;
 
         // Render saved connections
@@ -1623,6 +1826,57 @@ export class BoardView extends ItemView {
         polyline.setAttribute('fill', 'none');
 
         svg.appendChild(polyline);
+    }
+
+    private drawSpotlightJourneyLines(svg: SVGSVGElement, viewportRect: DOMRect): void {
+        // Get all visible scenes that match the spotlight criteria
+        const matchingScenes = this.getVisibleSpotlightMatchingScenes();
+        if (matchingScenes.length < 2) return;
+
+        // Sort by Act → Chapter → Sequence for journey order
+        const sorted = [...matchingScenes].sort((a, b) => {
+            const actCmp = compareActChapter(a.act, b.act);
+            if (actCmp !== 0) return actCmp;
+            const chCmp = compareActChapter(a.chapter, b.chapter);
+            if (chCmp !== 0) return chCmp;
+            return (a.sequence ?? 0) - (b.sequence ?? 0);
+        });
+
+        // Draw lines between consecutive matching scenes
+        for (let i = 0; i < sorted.length - 1; i++) {
+            const fromScene = sorted[i];
+            const toScene = sorted[i + 1];
+
+            const fromNode = this.boardEl?.querySelector<HTMLElement>(
+                `.story-line-corkboard-node[data-file-path="${CSS.escape(fromScene.filePath)}"]`
+            );
+            const toNode = this.boardEl?.querySelector<HTMLElement>(
+                `.story-line-corkboard-node[data-file-path="${CSS.escape(toScene.filePath)}"]`
+            );
+            if (!fromNode || !toNode) continue;
+
+            const fromRect = fromNode.getBoundingClientRect();
+            const toRect = toNode.getBoundingClientRect();
+            const fromX = fromRect.left + fromRect.width / 2 - viewportRect.left;
+            const fromY = fromRect.top + fromRect.height / 2 - viewportRect.top;
+            const toX = toRect.left + toRect.width / 2 - viewportRect.left;
+            const toY = toRect.top + toRect.height / 2 - viewportRect.top;
+
+            const polyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+            polyline.setAttribute('points', `${fromX},${fromY} ${toX},${toY}`);
+            polyline.setAttribute('stroke', 'rgba(255, 200, 80, 0.8)');
+            polyline.setAttribute('stroke-width', '2.5');
+            polyline.setAttribute('stroke-dasharray', '6,3');
+            polyline.setAttribute('fill', 'none');
+            polyline.setAttribute('pointer-events', 'none');
+
+            svg.appendChild(polyline);
+        }
+    }
+
+    private getVisibleSpotlightMatchingScenes(): Scene[] {
+        const scenes = this.sceneManager.getFilteredScenes(this.currentFilter, this.currentSort);
+        return scenes.filter(scene => this.isSceneSpotlightMatch(scene));
     }
 
     private createSavedConnection(): void {

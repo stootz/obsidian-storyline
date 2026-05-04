@@ -1,0 +1,11 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Adjust SVG layering and node z-index for connections behind cards",
+			"type": "shell",
+			"command": "echo Preparing to update BoardView.ts layering...",
+			"group": "none"
+		}
+	]
+}
