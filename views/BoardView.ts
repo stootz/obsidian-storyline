@@ -567,6 +567,7 @@ export class BoardView extends ItemView {
             }
 
             const node = canvas.createDiv('story-line-corkboard-node');
+            node.setAttribute('data-file-path', scene.filePath);
             node.style.left = `${pos.x}px`;
             node.style.top = `${pos.y}px`;
             node.style.zIndex = String(pos.z ?? 1);
@@ -892,20 +893,27 @@ export class BoardView extends ItemView {
         let dragging = false;
         let startClientX = 0;
         let startClientY = 0;
-        let startX = 0;
-        let startY = 0;
         let moved = false;
         let dragRaf: number | null = null;
-        let pendingX = 0;
-        let pendingY = 0;
+        let pendingDx = 0;
+        let pendingDy = 0;
         let lastClickTime = 0;
+        const dragStartPositions = new Map<string, { x: number; y: number; z: number }>();
+        const dragNodes = new Map<string, HTMLElement>();
 
         const applyDragPosition = () => {
             dragRaf = null;
-            node.style.left = `${pendingX}px`;
-            node.style.top = `${pendingY}px`;
-            const current = this.corkboardPositions.get(scenePath);
-            this.corkboardPositions.set(scenePath, { x: pendingX, y: pendingY, z: current?.z ?? 1 });
+            const zoom = this.corkboardCamera.zoom || 1;
+            for (const [path, pos] of dragStartPositions.entries()) {
+                const newX = pos.x + pendingDx / zoom;
+                const newY = pos.y + pendingDy / zoom;
+                const dragNode = dragNodes.get(path);
+                if (dragNode) {
+                    dragNode.style.left = `${newX}px`;
+                    dragNode.style.top = `${newY}px`;
+                }
+                this.corkboardPositions.set(path, { x: newX, y: newY, z: pos.z });
+            }
         };
 
         const onPointerMove = (e: PointerEvent) => {
@@ -915,9 +923,8 @@ export class BoardView extends ItemView {
             const dy = e.clientY - startClientY;
             if (Math.abs(dx) > 3 || Math.abs(dy) > 3) moved = true;
 
-            const zoom = this.corkboardCamera.zoom || 1;
-            pendingX = startX + dx / zoom;
-            pendingY = startY + dy / zoom;
+            pendingDx = dx;
+            pendingDy = dy;
 
             if (dragRaf === null) {
                 dragRaf = requestAnimationFrame(applyDragPosition);
@@ -930,7 +937,9 @@ export class BoardView extends ItemView {
         const onPointerUp = (e: PointerEvent) => {
             if (!dragging) return;
             dragging = false;
-            node.removeClass('is-dragging');
+            dragStartPositions.clear();
+            dragNodes.forEach((dragNode) => dragNode.removeClass('is-dragging'));
+            dragNodes.clear();
             if (node.hasPointerCapture(e.pointerId)) {
                 node.releasePointerCapture(e.pointerId);
             }
@@ -979,16 +988,24 @@ export class BoardView extends ItemView {
             moved = false;
             startClientX = e.clientX;
             startClientY = e.clientY;
+            pendingDx = 0;
+            pendingDy = 0;
 
-            const pos = this.corkboardPositions.get(scenePath) || {
-                x: parseFloat(node.style.left || '0') || 0,
-                y: parseFloat(node.style.top || '0') || 0,
-                z: Number.parseInt(node.style.zIndex || '1', 10) || 1,
-            };
-            startX = pos.x;
-            startY = pos.y;
+            const selectedPaths = this.selectedScenes.has(scenePath)
+                ? Array.from(this.selectedScenes).filter(path => !!this.boardEl?.querySelector(`[data-file-path="${CSS.escape(path)}"]`))
+                : [scenePath];
 
-            node.addClass('is-dragging');
+            for (const path of selectedPaths) {
+                const dragNode = this.boardEl?.querySelector(`[data-file-path="${CSS.escape(path)}"]`) as HTMLElement | null;
+                if (!dragNode) continue;
+                const styleLeft = parseFloat(dragNode.style.left || '0') || 0;
+                const styleTop = parseFloat(dragNode.style.top || '0') || 0;
+                const z = Number.parseInt(dragNode.style.zIndex || '1', 10) || 1;
+                dragStartPositions.set(path, { x: styleLeft, y: styleTop, z });
+                dragNodes.set(path, dragNode);
+                dragNode.addClass('is-dragging');
+            }
+
             node.setPointerCapture(e.pointerId);
             e.preventDefault();
             e.stopPropagation();
